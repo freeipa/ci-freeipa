@@ -27,6 +27,7 @@ from .loganalyze import (LogStore, CATEGORIES, CATEGORY_NAMES,
                          DEFAULT_LINES, DEFAULT_TAIL, ScanCache, cache_prefix)
 from .htmlreport import render_html
 from . import installtiming
+from . import logscript
 from .mdreport import render_markdown
 from . import container as container_mode
 from .detached import LocalDetached
@@ -451,6 +452,18 @@ def _timing_report(store, workdir, args):
     return 0
 
 
+def _script_report(store, args):
+    paths = store.console_paths()
+    if not paths:
+        print('error: no run.log console log in this workdir',
+              file=sys.stderr)
+        return 2
+    with open(paths[0], errors='replace') as f:
+        for line in logscript.transcript(f, args.script, args.host):
+            print(line)
+    return 0
+
+
 def _pick_job(src, root, quiet=False):
     """A batch download holds one <preset>/ workdir per preset under root:
     return the only one; several is an error; none is None when quiet."""
@@ -543,6 +556,8 @@ def cmd_logs(args):
     else:
         args.pattern_compiled = None
     store = LogStore(workdir)
+    if args.script is not None:
+        return _script_report(store, args)
     if args.timing:
         return _timing_report(store, workdir, args)
     if args.html:
@@ -1567,6 +1582,11 @@ def main(argv=None):
                     help='instead of the terminal view, write a '
                          'self-contained results.html and exit (default '
                          'output: <workdir>/logs/results.html)')
+    sp.add_argument('--script', nargs='?', const='', metavar='TEST',
+                    help='print the commands the run executed, with their '
+                         'output, as a shell transcript; TEST (substring of '
+                         'the test id) limits it to those tests; --host '
+                         'limits it to one host')
     sp.add_argument('--timing', action='store_true',
                     help='time spent in each installer service and step, '
                          'rated red/amber/green, with the warnings, errors, '
