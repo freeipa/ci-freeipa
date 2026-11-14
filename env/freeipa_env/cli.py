@@ -99,6 +99,11 @@ def cmd_report(args):
     collected log tree resolve on the artifact server and locally).
     """
     workdir = args.workdir
+    for cand in (workdir, args.env):
+        adopted = cand and _adopt_download(cand)
+        if adopted:
+            workdir, args.env = adopted, None
+            break
     if not workdir:
         if not args.env:
             print('error: give an env file (to derive the default workdir) '
