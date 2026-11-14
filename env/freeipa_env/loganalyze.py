@@ -138,9 +138,11 @@ CATEGORIES = [
     Category('ca', 'CA (pki or ipacta) instance logs',
              prefixes=('var/log/pki/pki-tomcat/ca/',
                        'var/log/pki/pki-ca-spawn',
-                       'var/log/ipacta/'),
+                       'var/log/ipacta/',
+                       'tmp/'),
              filere=r'(debug\.[^/]+\.log|selftests\.log|' 
-                    r'pki-ca-spawn[^/]+\.log|var/log/ipacta/[^/]+\.log)$',
+                    r'pki-ca-spawn[^/]+\.log|var/log/ipacta/[^/]+\.log|'
+                    r'\.journal\.ipacta\.log)$',
              match=r'(SEVERE|FATAL|ERROR|Exception|CRITICAL)'),
     Category('kdc', 'KDC (krb5kdc)',
              prefixes=('var/log/krb5kdc.log',),

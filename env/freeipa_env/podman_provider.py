@@ -588,11 +588,16 @@ class PodmanProvider:
     # ipa*, krb5kdc, pki, samba, bind data, plus the boot journal
     _DAEMON_LOG_TAR = (
         'journalctl -b --no-pager > /tmp/{n}.journal.log &&'
+        # daemons in their own journal namespaces (ipacta, ...) are not in `-b`
+        ' for ns in $(ls -d /var/log/journal/*.* /run/log/journal/*.*'
+        ' 2>/dev/null | sed -E "s/.*\\.//" | sort -u); do'
+        ' journalctl --namespace $ns -b --no-pager'
+        ' > /tmp/{n}.journal.$ns.log; done &&'
         ' tar --ignore-failed-read -czf /tmp/{n}-logs.tar.gz'
         ' --warning=no-failed-read'
         ' /var/log/dirsrv /var/log/httpd /var/log/ipa*'
         ' /var/log/krb5kdc.log /var/log/pki /var/log/samba'
-        ' /var/named/data /tmp/{n}.journal.log || :')
+        ' /var/named/data /tmp/{n}.journal*.log || :')
 
     def collect_logs(self):
         dest = os.path.join(self.logdir, 'collected')
