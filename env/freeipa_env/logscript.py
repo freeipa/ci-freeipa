@@ -49,3 +49,13 @@ def transcript(lines, test=None, host=None):
         elif cur and not _NOISE.match(msg):
             yield msg
 
+
+def per_test(lines):
+    """{node id: transcript lines} for every test in the console log."""
+    out, cur = {}, None
+    for line in transcript(lines):
+        if line.startswith('# == '):
+            cur = out.setdefault(line[5:], [])
+        elif cur is not None:
+            cur.append(line)
+    return out

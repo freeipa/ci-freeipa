@@ -27,6 +27,7 @@ import html
 import os
 import sys
 
+from . import logscript
 from .loganalyze import (CATEGORIES, CATEGORY_NAMES, LogStore, parse_xunit,
                          xunit_testcases, load_results, overall_status,
                          scan_file, ptest_status, parse_pytest_html)
@@ -297,6 +298,12 @@ def _ptest_section(store):
         for nodeid, e in parse_pytest_html(ph).items():
             logmap[nodeid.replace('/', '-').replace('::', '-')] = e
 
+    cmds = {}
+    for rl in store.console_paths():
+        with open(rl, errors='replace') as f:
+            for nodeid, ls in logscript.per_test(f).items():
+                cmds[nodeid.replace('/', '-').replace('::', '-')] = ls
+
     tcs = []
     for xp in store.xunit_paths():
         try:
@@ -312,7 +319,8 @@ def _ptest_section(store):
 
         # (1) pytest captured output for this nodeid
         out_html = []
-        out_html.append('<div class="file"><div class="path">pytest output</div>')
+        out_html.append('<details class="file"><summary class="path">'
+                        'pytest output</summary>')
         if pe is not None:
             log = pe.get('log') or ''
             if log and log.strip():
@@ -335,7 +343,13 @@ def _ptest_section(store):
                 '<div class="note">no per-test captured output for this '
                 'entry (setup/teardown phase, or not in the pytest report)'
                 '</div>')
-        out_html.append('</div>')
+        out_html.append('</details>')
+
+        # (1b) the commands the test ran, from the console log, shown first
+        if cmds.get(test):
+            out_html.insert(0, '<div class="file"><div class="path">commands'
+                            '</div><pre>' + _esc('\n'.join(cmds[test]))
+                            + '</pre></div>')
 
         # (2) links to the collected log files, per host/phase
         file_html = out_html
