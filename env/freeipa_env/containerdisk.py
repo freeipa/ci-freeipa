@@ -20,6 +20,7 @@ filled by one path is reused by the other.
 import gzip
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -49,12 +50,14 @@ def _podman(args):
     return p.stdout.strip()
 
 
-def _skopeo_pull(ref):
+def _skopeo_pull(ref, arch):
     """(image id, layer path, temp dir) of `ref`, pulled with skopeo.
 
     Used instead of podman on a control node that is itself a container
     (see container.py): skopeo never touches a container store. The caller
-    must remove the temp directory.
+    must remove the temp directory. `arch` selects the member of a
+    multi-arch manifest list (the Go name: arm64, not aarch64) and pins the
+    OS to linux, or the host's (darwin) would select nothing.
     """
     if not shutil.which('skopeo'):
         raise ContainerDiskError('skopeo not found (needed for a '
@@ -71,9 +74,11 @@ def _skopeo_pull(ref):
             with open(auth, 'w') as f:
                 f.write('{}\n')
         env.setdefault('REGISTRY_AUTH_FILE', auth)
-        p = subprocess.run(['skopeo', 'copy', f'docker://{ref}',
-                            f'dir:{tmp}'], capture_output=True, text=True,
-                           timeout=3600, check=False, env=env)
+        p = subprocess.run(
+            ['skopeo', 'copy', '--override-arch', _goarch(arch),
+             '--override-os', 'linux', f'docker://{ref}', f'dir:{tmp}'],
+            capture_output=True, text=True, timeout=3600, check=False,
+            env=env)
         if p.returncode:
             raise ContainerDiskError(f'skopeo copy {ref} failed: '
                                       f'{(p.stderr or p.stdout).strip()[-800:]}')
@@ -115,16 +120,45 @@ def _qemu_img():
     return None
 
 
-def _resolve_podman(ref):
-    _podman(['pull', '-q', ref])
+def _goarch(arch):
+    """The Go architecture name registries use (x86_64/amd64, aarch64/
+    arm64)."""
+    return {'x86_64': 'amd64', 'aarch64': 'arm64'}.get(arch, arch)
+
+
+def _assert_arch(ref, want):
+    """Fail when the pulled image's architecture is not `want`.
+
+    A missing member of a manifest list makes the platform-asked pull fail
+    on its own, but a *single-arch* image is returned unchanged (no
+    error), so a linux/amd64-only tag asked for arm64 would otherwise hand
+    the qemu backend an unbootable disk.
+    """
+    arch = _podman(['image', 'inspect', '--format', '{{.Architecture}}',
+                    ref])
+    if arch != _goarch(want):
+        raise ContainerDiskError(
+            f'{ref}: the image is {arch}, not {_goarch(want)} (no '
+            f'{arch} member in the tag)')
+
+
+def _resolve_podman(ref, arch):
+    # a containers-storage: ref names an image already in the local store:
+    # there is nothing to pull (podman 6 cannot, podman 4 need not), and
+    # the store is addressed without the transport prefix
+    local = ref.startswith('containers-storage:')
+    store_ref = ref[len('containers-storage:'):] if local else ref
+    if not local:
+        _podman(['pull', '-q', '--platform', f'linux/{arch}', ref])
+    _assert_arch(store_ref, arch)
     image_id = _podman(['image', 'inspect', '--format',
-                        '{{.Id}}', ref])[:12]
+                        '{{.Id}}', store_ref])[:12]
     dest = os.path.join(
         CACHE, f'{re.sub(r"[^A-Za-z0-9._-]+", "_", ref)}-{image_id}.qcow2')
     if os.path.isfile(dest):
         return dest
     os.makedirs(CACHE, exist_ok=True)
-    cid = _podman(['create', ref, DISK_IN_IMAGE])   # scratch: no command runs
+    cid = _podman(['create', store_ref, DISK_IN_IMAGE])  # scratch: no cmd runs
     try:
         _podman(['cp', f'{cid}:{DISK_IN_IMAGE}', dest + '.partial'])
     except ContainerDiskError as e:
@@ -134,8 +168,8 @@ def _resolve_podman(ref):
     return dest
 
 
-def _resolve_skopeo(ref):
-    image_id, layer, tmp = _skopeo_pull(ref)
+def _resolve_skopeo(ref, arch):
+    image_id, layer, tmp = _skopeo_pull(ref, arch)
     try:
         dest = os.path.join(
             CACHE, f'{re.sub(r"[^A-Za-z0-9._-]+", "_", ref)}-'
@@ -149,21 +183,29 @@ def _resolve_skopeo(ref):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def resolve(image):
-    """The local qcow2 for `image`: a plain path is returned as it is."""
+def resolve(image, arch=None):
+    """The local qcow2 for `image`: a plain path is returned as it is.
+
+    `arch` (a qemu arch such as x86_64 or aarch64) selects the member of a
+    multi-arch manifest list; the default is the host platform. A tag that
+    has no such member fails with a clear error instead of handing the
+    backend a disk of the wrong architecture, which would not boot.
+    """
     if not image.startswith(PREFIX):
         return image
+    if arch is None:
+        arch = platform.machine()
+        if arch == 'arm64':
+            arch = 'aarch64'
     if container_mode.in_container():
         container_mode.prepare_tools()       # qemu-img, on the wrapper PATH
     ref = image[len(PREFIX):]
     if ref.startswith(('containers-storage:', 'oci-archive:')):
-        dest = _resolve_podman(ref)      # local stores: only podman has them
-        if os.path.isfile(dest):
-            return dest
+        dest = _resolve_podman(ref, arch)   # local stores: only podman has them
     elif container_mode.in_container():
-        dest = _resolve_skopeo(ref)
+        dest = _resolve_skopeo(ref, arch)
     else:
-        dest = _resolve_podman(ref)
+        dest = _resolve_podman(ref, arch)
     if os.path.isfile(dest):
         return dest
     tool = _qemu_img()

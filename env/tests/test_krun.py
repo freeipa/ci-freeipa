@@ -2,7 +2,9 @@ import os
 import shutil
 import socket
 import subprocess
+import tempfile
 import threading
+import uuid
 
 import pytest
 
@@ -10,9 +12,9 @@ from freeipa_env import krunproc
 from freeipa_env.vmbackend import KrunBackend, VMBackendError
 
 
-def _client(tmp_path, name, hub):
+def _client(dir_, name, hub):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-    s.bind(str(tmp_path / name))
+    s.bind(os.path.join(dir_, name))
     s.connect(hub)
     return s
 
@@ -29,9 +31,14 @@ def _received(s, want):
 
 
 def test_the_hub_floods_each_frame_to_the_other_peers_and_exits_when_the_vms_are_gone(tmp_path):
+    # darwin's sun_path is 104 bytes and pytest's numbered per-test dirs can
+    # exceed it: the sockets live in a short throwaway dir instead
+    short = os.path.join(tempfile.gettempdir(),
+                         f'ci-krun-hub-{uuid.uuid4().hex[:8]}')
+    os.mkdir(short)
     vm = subprocess.Popen(['sleep', '30'])
     (tmp_path / 'vm.pid').write_text(str(vm.pid))
-    hub = str(tmp_path / 'hub.sock')
+    hub = os.path.join(short, 'hub.sock')
     t = threading.Thread(target=krunproc.hub, args=(hub, [str(tmp_path / 'vm.pid')]),
                          daemon=True)
     t.start()
@@ -40,7 +47,7 @@ def test_the_hub_floods_each_frame_to_the_other_peers_and_exits_when_the_vms_are
             if os.path.exists(hub):
                 break
             threading.Event().wait(0.05)
-        a, b, c = (_client(tmp_path, n, hub) for n in 'abc')
+        a, b, c = (_client(short, n, hub) for n in 'abc')
         b.send(b'hello')
         c.send(b'hello')
         a.send(b'frame-from-A')
@@ -54,6 +61,7 @@ def test_the_hub_floods_each_frame_to_the_other_peers_and_exits_when_the_vms_are
         vm.wait()
     t.join(10)
     assert not t.is_alive()
+    shutil.rmtree(short, ignore_errors=True)
 
 
 @pytest.mark.skipif(not (shutil.which('mkfs.vfat') and shutil.which('mcopy')),

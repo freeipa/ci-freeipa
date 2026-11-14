@@ -78,7 +78,13 @@ def _alive(pid):
         with open(f'/proc/{pid}/cmdline', 'rb') as f:
             return bool(f.read())      # a zombie has an empty cmdline
     except OSError:
+        pass          # no /proc (macOS): fall through to ps
+    try:
+        p = subprocess.run(['ps', '-p', str(pid), '-o', 'stat='],
+                           capture_output=True, text=True)
+    except OSError:
         return False
+    return p.returncode == 0 and not p.stdout.strip().startswith('Z')
 
 
 def hub(sock_path, pidfiles):

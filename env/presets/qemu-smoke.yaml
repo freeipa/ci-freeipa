@@ -2,6 +2,8 @@
 # published Fedora 45 image (github.com/freeipa/ci-freeipa-vm-images) with the
 # distro FreeIPA packages, and ipatests' single-master install on it.
 # Needs /dev/kvm and podman: `freeipa-env up|run|down env/presets/qemu-smoke.yaml`.
+# The image tag is a multi-arch manifest: the same preset runs on x86_64 and
+# aarch64 hosts (Apple Silicon macOS under hvf, aarch64 Linux under KVM).
 name: qemu-smoke
 domain: ipa.test
 provider: nested
@@ -16,6 +18,7 @@ run:
     - test_integration/test_installation.py::TestInstallMaster::test_install_master
 vm:
   backend: qemu
+  dns: [8.8.8.8, 1.1.1.1]    # bypass the slirp DNS forwarder (macOS/corp nets)
   image: containerdisk:ghcr.io/freeipa/ci-freeipa-vm-images/fedora-45:latest
   cpus: 4
   disk: 40G
