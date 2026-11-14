@@ -446,8 +446,62 @@ def _timing_report(store, workdir, args):
     return 0
 
 
+def _pick_job(src, root, quiet=False):
+    """A batch download holds one <preset>/ workdir per preset under root:
+    return the only one; several is an error; none is None when quiet."""
+    jobs = sorted(d for d in os.listdir(root) if os.path.isdir(
+        os.path.join(root, d, 'logs', 'collected'))
+        or os.path.isdir(os.path.join(root, d, 'inner', 'logs', 'collected')))
+    if len(jobs) == 1:
+        return os.path.join(root, jobs[0])
+    if not jobs and quiet:
+        return None
+    print(f'error: {src} holds {len(jobs)} jobs; pick one with '
+          f'--workdir {root}/<job>: {", ".join(jobs)}', file=sys.stderr)
+    sys.exit(2)
+
+
+def _adopt_download(path):
+    """A CI log download (GitHub Actions artifact zip, or its unpacked dir)
+    has collected/ at its root, i.e. it is a workdir's logs/ dir. Return a
+    workdir under the state dir whose logs/ is that content, else None."""
+    import zipfile
+    p = os.path.abspath(path)
+    if os.path.isfile(p) and zipfile.is_zipfile(p):
+        stem = re.sub(r'\.zip$', '', os.path.basename(p))
+        work = os.path.join(state_home(), 'freeipa-env', 'download-' + stem)
+        with zipfile.ZipFile(p) as z:
+            names = z.namelist()
+            flat = any(n.startswith('collected/') for n in names)
+            if not flat and not any('/logs/collected/' in n for n in names):
+                return None
+            if not os.path.isdir(work):
+                z.extractall(os.path.join(work, 'logs') if flat else work)
+                print(f'== unpacked {p} into {work}', file=sys.stderr)
+        if flat:
+            return work
+        return _pick_job(p, work)
+    if (os.path.isdir(os.path.join(p, 'collected'))
+            and not os.path.isdir(os.path.join(p, 'logs', 'collected'))):
+        work = os.path.join(state_home(), 'freeipa-env',
+                            'download-' + os.path.basename(p))
+        os.makedirs(work, exist_ok=True)
+        link = os.path.join(work, 'logs')
+        if not os.path.lexists(link):
+            os.symlink(p, link)
+        return work
+    if os.path.isdir(p):
+        return _pick_job(p, p, quiet=True)
+    return None
+
+
 def cmd_logs(args):
     workdir = args.workdir
+    for cand in (workdir, args.env):
+        adopted = cand and _adopt_download(cand)
+        if adopted:
+            workdir, args.workdir, args.env = adopted, adopted, None
+            break
     spec = None
     if not workdir and args.env and _is_queue(args.env):
         return _list_queue_jobs(args.env)
@@ -1467,7 +1521,8 @@ def main(argv=None):
         'logs',
         help='categorize and retrieve collected logs for troubleshooting')
     sp.add_argument('env', nargs='?', default=None,
-                    help='env.yaml (or preset) path')
+                    help='env.yaml (or preset) path, or a CI log download '
+                         '(GitHub Actions artifact .zip / its unpacked dir)')
     sp.add_argument('--workdir', default=None,
                     help='state/logs dir to analyze (default '
                          '$XDG_STATE_HOME/freeipa-env/<env-name>)')
