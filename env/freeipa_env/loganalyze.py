@@ -29,7 +29,7 @@ Categories (each carries a default line filter, overridable with
     ds         389-ds errors log
     httpd      httpd error_log (IPA framework errors, tracebacks)
     kra        KRA instance logs (pki)
-    ca         CA instance logs (pki)
+    ca         CA instance logs (pki, or ipacta in its place)
     kdc        krb5kdc.log
     samba      /var/log/samba (AD trust)
     dns        BIND runtime logs (/var/named/data)
@@ -135,12 +135,13 @@ CATEGORIES = [
              filere=r'(debug\.[^/]+\.log|selftests\.log|' 
                     r'pki-kra-spawn[^/]+\.log)$',
              match=r'(SEVERE|FATAL|ERROR|Exception)'),
-    Category('ca', 'CA (pki) instance logs',
+    Category('ca', 'CA (pki or ipacta) instance logs',
              prefixes=('var/log/pki/pki-tomcat/ca/',
-                       'var/log/pki/pki-ca-spawn'),
+                       'var/log/pki/pki-ca-spawn',
+                       'var/log/ipacta/'),
              filere=r'(debug\.[^/]+\.log|selftests\.log|' 
-                    r'pki-ca-spawn[^/]+\.log)$',
-             match=r'(SEVERE|FATAL|ERROR|Exception)'),
+                    r'pki-ca-spawn[^/]+\.log|var/log/ipacta/[^/]+\.log)$',
+             match=r'(SEVERE|FATAL|ERROR|Exception|CRITICAL)'),
     Category('kdc', 'KDC (krb5kdc)',
              prefixes=('var/log/krb5kdc.log',),
              filere=r'^var/log/krb5kdc\.log$',
