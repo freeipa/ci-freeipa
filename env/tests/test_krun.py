@@ -84,6 +84,8 @@ def test_unsupported_options_and_limits_are_refused_before_a_vm_starts():
         b._check_krun([{'gpu': 'virgl'}])
     with pytest.raises(VMBackendError, match='usb'):
         b._check_krun([{'usb': ['1d6b:0002']}])
+    with pytest.raises(VMBackendError, match='tpm'):
+        b._check_krun([{'tpm': True}])
     with pytest.raises(VMBackendError, match=r'1\.\.16'):
         b._check_krun([{'cpus': 17}])
     long = KrunBackend({'backend': 'krun', 'state_dir': '/tmp/' + 'x' * 90})

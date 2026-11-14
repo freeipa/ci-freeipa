@@ -410,6 +410,7 @@ class OpenstackBackend(VMBackend):
 
 
 PRIVATE_PREFIX = '192.168.100'
+OVMF_CODE = '/usr/share/edk2/ovmf/OVMF_CODE.fd'
 
 
 def _free_port(kind=socket.SOCK_STREAM) -> int:
@@ -612,6 +613,8 @@ class QemuBackend(VMBackend):
           render_node: /dev/dri/renderD128   # default, for gpu: virgl
           usb: [VVVV:PPPP]              # optional, per VM; host USB devices by
                                         #   VVVV:PPPP, one entry per device
+          tpm: true                     # optional, per VM; a TPM 2.0 (swtpm) for
+                                        #   the VM, its state discarded at down
           vms:                          # optional per-VM overrides, one per VM;
                                         #   vm.count must equal len(vms)
             - {name: master1, cpus: 8, memory: 16384}
@@ -621,7 +624,8 @@ class QemuBackend(VMBackend):
     ``console.log`` is kept for triage.
     """
     name = 'qemu'
-    _VM_FILES = ('disk.qcow2', 'seed.iso', 'user-data', 'meta-data', 'qemu.pid')
+    _VM_FILES = ('disk.qcow2', 'seed.iso', 'user-data', 'meta-data', 'qemu.pid',
+                 'swtpm.pid', 'swtpm.sock')
 
     def _state_dir(self):
         return os.path.expanduser(
@@ -662,6 +666,13 @@ class QemuBackend(VMBackend):
         for tool in self._tools():
             if not shutil.which(tool):
                 raise VMBackendError(f'{self.name} backend: {tool} not found')
+        if any(c.get('tpm') for c in cfgs):
+            if not shutil.which('swtpm'):
+                raise VMBackendError(f'{self.name} backend: vm.tpm needs swtpm '
+                                     '(dnf install swtpm)')
+            if not os.path.isfile(OVMF_CODE):
+                raise VMBackendError(f'{self.name} backend: vm.tpm boots with UEFI '
+                                     f'and needs {OVMF_CODE} (dnf install edk2-ovmf)')
 
     def _pubkeys(self):
         """(authorized public key texts, private key for ssh or None)."""
@@ -749,6 +760,36 @@ class QemuBackend(VMBackend):
                 '-display', f'egl-headless,rendernode={node}',
                 '-vnc', f'127.0.0.1:{disp},websocket={q["vnc_websocket"]}']
 
+    def _start_swtpm(self, vmdir) -> list:
+        """Start a TPM 2.0 emulator for the VM; return the qemu arguments that
+        attach it, and UEFI firmware: ``systemd-analyze has-tpm2`` says
+        ``partial`` on a BIOS boot (with ``tpm-tis`` too). ``--terminate`` ends
+        swtpm when qemu closes the control channel."""
+        sock = os.path.join(vmdir, 'swtpm.sock')
+        state = os.path.join(vmdir, 'tpm')
+        os.makedirs(state)
+        self._run(['swtpm', 'socket', '--tpm2', '--tpmstate', f'dir={state}',
+                   '--ctrl', f'type=unixio,path={sock}', '--terminate', '--daemon',
+                   '--pid', f'file={os.path.join(vmdir, "swtpm.pid")}',
+                   '--log', f'file={os.path.join(vmdir, "swtpm.log")}'])
+        for _ in range(50):
+            if os.path.exists(sock):
+                break
+            time.sleep(0.1)
+        else:
+            raise VMBackendError('qemu backend: swtpm did not create its socket')
+        return ['-chardev', f'socket,id=chrtpm,path={sock}',
+                '-tpmdev', 'emulator,id=tpm0,chardev=chrtpm',
+                '-device', 'tpm-crb,tpmdev=tpm0', '-bios', OVMF_CODE]
+
+    def _stop_swtpm(self, vmdir):
+        try:
+            with open(os.path.join(vmdir, 'swtpm.pid')) as f:
+                os.kill(int(f.read().strip()), signal.SIGTERM)
+        except (FileNotFoundError, ProcessLookupError, ValueError):
+            pass
+        shutil.rmtree(os.path.join(vmdir, 'tpm'), ignore_errors=True)
+
     def _start(self, keys, key, net, seg, c):
         vm_id = f'freeipa-ci-{uuid.uuid4().hex[:10]}'
         vmdir = os.path.join(self._state_dir(), vm_id)
@@ -772,7 +813,9 @@ class QemuBackend(VMBackend):
                        '-machine', 'q35,accel=kvm', '-cpu', 'host',
                        '-smp', str(c.get('cpus', 4)),
                        '-m', str(c.get('memory', 8192)),
-                       *self._display_args(c, q), *_usb_args(c), '-daemonize',
+                       *self._display_args(c, q), *_usb_args(c),
+                       *(self._start_swtpm(vmdir) if c.get('tpm') else []),
+                       '-daemonize',
                        '-pidfile', q['pidfile'],
                        '-serial', f'file:{q["console"]}',
                        '-drive', f'file={disk},if=virtio,format=qcow2',
@@ -784,6 +827,7 @@ class QemuBackend(VMBackend):
                        '-netdev', priv_netdev,
                        '-device', f'virtio-net-pci,netdev=priv,mac={net["mac_priv"]}'])
         except Exception:
+            self._stop_swtpm(vmdir)
             shutil.rmtree(vmdir, ignore_errors=True)
             raise
         if 'vnc_websocket' in q:
@@ -866,6 +910,7 @@ class QemuBackend(VMBackend):
         pid = _qemu_pid(q['pidfile'], handle.id)
         if pid:
             stop_qemu(pid)
+        self._stop_swtpm(q['dir'])
         for f in self._VM_FILES:
             try:
                 os.remove(os.path.join(q['dir'], f))
@@ -898,7 +943,7 @@ class KrunBackend(QemuBackend):
     """
     name = 'krun'
     _VM_FILES = QemuBackend._VM_FILES + ('seed.img', 'network-config', 'vm.json')
-    _UNSUPPORTED = ('gpu', 'render_node', 'usb', 'qemu')
+    _UNSUPPORTED = ('gpu', 'render_node', 'usb', 'qemu', 'tpm')
     _MAX_VCPUS = 16
     _MAX_DIR = 83   # unix socket paths are 107 bytes; longest: <vmdir>/krun-net-<7 digit pid>-0.sock
 

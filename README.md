@@ -301,6 +301,13 @@ Set `vm.usb: [VVVV:PPPP, ...]` in `vm.vms[i]` to give host USB devices to that V
 - While the VM runs, the device is not available on the host.
 - The user must be able to read and write `/dev/bus/usb/BBB/DDD` for the device. If not, `up` fails and prints that path. A udev rule is the usual fix.
 
+#### vTPM
+
+Set `vm.tpm: true` in `vm.vms[i]` to give that VM a TPM 2.0 (`tpm-crb`, emulated by `swtpm`). Check it in the guest with `systemd-analyze has-tpm2`, which must say `yes`. That needs UEFI: on a BIOS boot it says `partial`, with `tpm-tis` too, so a VM with `tpm` boots with `/usr/share/edk2/ovmf/OVMF_CODE.fd`.
+
+- The TPM state lives in the VM directory and is discarded at `down`.
+- The `krun` backend does not support it.
+
 #### Host packages for the qemu backend (Fedora)
 
 These packages are required:
@@ -310,6 +317,8 @@ sudo dnf install qemu-system-x86-core qemu-img genisoimage rsync openssh-clients
 ```
 
 You can use `xorriso` or `mkisofs` instead of `genisoimage`.
+
+For `vm.tpm`, also install `swtpm` and `edk2-ovmf`.
 
 For `vm.gpu: virgl`, also install:
 
