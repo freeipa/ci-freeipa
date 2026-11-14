@@ -280,7 +280,7 @@ vm:
   image: containerdisk:ghcr.io/OWNER/fedora-cloud-base:45-1.4
 ```
 
-- `up` runs `podman pull`, copies the disk out with `podman create` and `podman cp`, and checks that it is a qcow2 file. It needs podman only: no root, no `bootc`, no conversion. This is the difference from the bootc disk above, which each guest would have to build.
+- `up` runs `podman pull --platform linux/<arch>`, copies the disk out with `podman create` and `podman cp`, and checks that it is a qcow2 file. The arch is the one the VM will boot (`vm.arch`, default the host's), so a multi-arch tag yields its matching member; a tag without that member fails with a clear error instead of booting a disk of the wrong architecture. Inside a container (where podman is never run) skopeo selects the member with `--override-arch`/`--override-os`. It needs podman only: no root, no `bootc`, no conversion. This is the difference from the bootc disk above, which each guest would have to build.
 - The disk is cached in `~/.cache/freeipa-ci/images/containerdisk/`, named after the image id. A tag that moves is picked up on the next `up`. An unchanged image is not copied again.
 - `images/vm/publish.sh DISK.qcow2 REF [--push]` builds the image. It labels the image with the disk's SHA-256. Run `podman login` first; the script does not handle credentials. The Fedora cloud image that `qemu-prep.sh` downloads is the usual input.
 - On Testing Farm, `qemu-prep.sh` does not download an image named `containerdisk:`, and the qemu plan installs podman. A guest then pulls from your registry, not from `download.fedoraproject.org`.
@@ -288,7 +288,7 @@ vm:
 
 I tested it with a local image: `publish.sh` built a containerdisk from the Fedora 44 cloud image, and the qemu backend booted a VM from it in 17 s. I did not pull from a real registry, and I did not run it on Testing Farm.
 
-- The published `ci-freeipa-vm-images` tags are linux/amd64 today. On aarch64 use the Fedora cloud image URL instead (as the `*-aarch64` presets do), until multi-arch manifests exist.
+- The published tags are multi-arch manifests (x86_64 and aarch64): the same preset ref works on both host architectures. The aarch64 members are the pristine upstream images until the arm lanes can update and test them (the GitHub arm runners have no KVM).
 
 #### GPU: virgl
 
@@ -465,22 +465,22 @@ A queue of `provider: nested` presets runs under the `freeipa-env queue` supervi
 
 Both lanes work on macOS; the control node stays this machine, no lima.
 
-**VM lane (qemu, Apple hvf).** `brew install qemu xorriso`, then run the
-aarch64 preset:
+**VM lane (qemu, Apple hvf).** `brew install qemu xorriso podman`, then run
+the smoke preset (the same one the x86_64 lane runs; the image tag is a
+multi-arch manifest, so `up` pulls its aarch64 member):
 
 ```sh
-freeipa-env up    env/presets/qemu-smoke-aarch64.yaml
-freeipa-env run   env/presets/qemu-smoke-aarch64.yaml
-freeipa-env down  env/presets/qemu-smoke-aarch64.yaml
+freeipa-env up    env/presets/qemu-smoke.yaml
+freeipa-env run   env/presets/qemu-smoke.yaml
+freeipa-env down  env/presets/qemu-smoke.yaml
 ```
 
-The VM runs under Apple's Hypervisor.framework (`hvf`, near-native speed),
-boots from the Fedora aarch64 cloud image (downloaded once to
-`~/.cache/freeipa-ci/images/`), and the UEFI firmware bundled with brew's
-qemu is found automatically. GitHub macOS runners cannot use
-Hypervisor.framework, so there is no macOS VM job in CI; local runs are the
-proof. If `hvf` is unavailable, `vm.accel: tcg` falls back to emulation
-(slow). USB passthrough and `gpu: virgl` need a Linux host.
+The VM runs under Apple's Hypervisor.framework (`hvf`, near-native speed)
+and the UEFI firmware bundled with brew's qemu is found automatically.
+GitHub macOS runners cannot use Hypervisor.framework, so there is no macOS
+VM job in CI; local runs are the proof. If `hvf` is unavailable,
+`vm.accel: tcg` falls back to emulation (slow). USB passthrough and
+`gpu: virgl` need a Linux host.
 
 **Container lane (podman machine).** `brew install podman`, then:
 
@@ -504,9 +504,8 @@ keep the `--workdir` of podman-lane runs under `$HOME` (e.g.
 `--platform linux/aarch64` to the container tool: native on arm hosts
 (including a macOS podman machine); cross-builds from x86_64 need
 qemu-user emulation and are slow. The tag scheme is arch-less — aarch64
-builds on a shared host use a distinct `--tag`. Multi-arch containerdisks
-would come from [ci-freeipa-vm-images](https://github.com/freeipa/ci-freeipa-vm-images)
-(a separate repository).
+builds on a shared host use a distinct `--tag`. Multi-arch *containerdisks*
+(the VM images) come from [ci-freeipa-vm-images](https://github.com/freeipa/ci-freeipa-vm-images).
 
 ## Artifacts
 
@@ -619,8 +618,8 @@ If the workdir has a `results.yaml` for each stage, the report adds a `Stages` t
 
 - `presets/base-xmlrpc.yaml`: the Azure **xmlrpc** job. One master, DNS and KRA, and `test_xmlrpc` without `test_dns_plugin.py`.
 - `presets/external-smoke.yaml`: a template for external provider smoke tests.
-- `presets/qemu-smoke-aarch64.yaml`: the `qemu-smoke` counterpart on a Fedora 45 aarch64 cloud image (Apple Silicon macOS under hvf, aarch64 Linux under KVM, elsewhere tcg).
-- `presets/nested-qemu-external-aarch64.yaml`: the `nested-qemu-external` counterpart on the aarch64 cloud image: master + client on their own VMs, `inner: external`.
+- `presets/qemu-smoke.yaml`: one qemu VM from the published Fedora 45 image with the distro FreeIPA packages, and ipatests' single-master install. The image tag is a multi-arch manifest, so the same preset runs on x86_64 and aarch64 hosts (Apple Silicon macOS under hvf, aarch64 Linux under KVM).
+- `presets/nested-qemu-external.yaml`: master + client on their own qemu VMs, `inner: external`; the same multi-arch image tag as `qemu-smoke`.
 - `presets/azure/`: one preset for each Azure CI job. These presets recreate `ipatests/azure/azure_definitions/{base,gating}-fedora.yml`.
 
 | Preset (`presets/azure/`) | Azure job | Hosts | Suite |
