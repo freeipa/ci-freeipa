@@ -184,7 +184,13 @@ PLATFORM_ARGS=()
 [[ -n "$DISTARCH" ]] && PLATFORM_ARGS=(--platform "linux/$DISTARCH")
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-WORK="$(mktemp -d /tmp/freeipa-ci-build.XXXXXX)"
+# On macOS the podman machine shares only $HOME with its VM (virtiofs): a
+# /tmp work dir cannot be mounted into the build container (statfs fails).
+if [[ "$(uname -s)" == Darwin ]]; then
+    WORK="$(mktemp -d "$HOME/.freeipa-ci-build.XXXXXX")"
+else
+    WORK="$(mktemp -d /tmp/freeipa-ci-build.XXXXXX)"
+fi
 trap 'rm -rf "$WORK"' EXIT
 
 BASE_IMAGE="$TAG/base:$DIST"
@@ -288,6 +294,17 @@ if [[ -n "$SRPM" ]]; then
 
     TOPDIR="$WORK/rpmbuild"
     mkdir -p "$TOPDIR"/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
+    # RPM's cpio creates its unpack temp files with mode 0200, which
+    # applehv virtiofs (the macOS podman machine) refuses outright, so on
+    # Darwin the rpmbuild topdir must live inside the container; the
+    # artifacts are copied out to the mounted dir afterwards.
+    if [[ "$(uname -s)" == Darwin ]]; then
+        MOUNT_TOPDIR=0
+        TOPDIR_IN=/root/rpmbuild
+    else
+        MOUNT_TOPDIR=1
+        TOPDIR_IN="$TOPDIR"
+    fi
     # The base (hence build) image's entrypoint is systemd: without an
     # override the rpmbuild command becomes systemd's arguments and the
     # container boots sshd/avahi/logind instead of running the build.
@@ -295,7 +312,7 @@ if [[ -n "$SRPM" ]]; then
     # _topdir and builds the binary RPMs from it. --nocheck skips the spec's
     # %check (the full `make check` unit-test suite) -- CI runs tests in its
     # own `run` lane, so the build lane must not pay for it on a small runner.
-    BUILD_CMD="rpmbuild --define '_topdir /root/rpmbuild' --nocheck --rebuild /root/build/$(basename "$SRPM_FILE")"
+    BUILD_CMD="rpmbuild --define '_topdir $TOPDIR_IN' --nocheck --rebuild /root/build/$(basename "$SRPM_FILE")"
     if [[ "$BUILDEP" == "1" ]]; then
         # The build image carries the BuildRequires of the upstream spec,
         # baked once. A spec under test (a dist-git PR) may add or rename
@@ -304,13 +321,23 @@ if [[ -n "$SRPM" ]]; then
         echo "==> --builddep: topping up BuildRequires in $BUILD_IMAGE"
         BUILD_CMD="set -e; dnf -y builddep /root/build/$(basename "$SRPM_FILE"); $BUILD_CMD"
     fi
-    "$TOOL" run --rm \
-        ${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"} \
-        --entrypoint /bin/bash \
-        -v "$SRPM_DIR":/root/build:z \
-        -v "$TOPDIR":/root/rpmbuild:z \
-        "$BUILD_IMAGE" \
-        -c "$BUILD_CMD"
+    if (( MOUNT_TOPDIR )); then
+        "$TOOL" run --rm \
+            ${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"} \
+            --entrypoint /bin/bash \
+            -v "$SRPM_DIR":/root/build:z \
+            -v "$TOPDIR":/root/rpmbuild:z \
+            "$BUILD_IMAGE" \
+            -c "$BUILD_CMD"
+    else
+        "$TOOL" run --rm \
+            ${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"} \
+            --entrypoint /bin/bash \
+            -v "$SRPM_DIR":/root/build:z \
+            -v "$TOPDIR":/root/rpmbuild-out:z \
+            "$BUILD_IMAGE" \
+            -c "set -e; rm -rf $TOPDIR_IN; mkdir -p $TOPDIR_IN; $BUILD_CMD; mkdir -p /root/rpmbuild-out/RPMS; cp -a $TOPDIR_IN/RPMS/. /root/rpmbuild-out/RPMS/"
+    fi
 
     mkdir -p "$WORK/rpms"
     find "$TOPDIR/RPMS" -name '*.rpm' \
