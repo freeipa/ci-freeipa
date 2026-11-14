@@ -478,7 +478,8 @@ Each category has a default line filter. You can replace it with `--pattern REX`
 | `uninstall` | `ipaserver-uninstall.log`. ERROR and WARNING lines. |
 | `ds` | The 389-ds `errors` log. `- ERR -` and `- CRIT -` lines. |
 | `httpd` | `error_log`. IPA framework errors and Python tracebacks. Debug messages are removed. |
-| `kra`, `ca` | The pki instance logs (`pki-tomcat/{kra,ca}`) and the spawn logs. |
+| `kra`, `ca` | The pki instance logs (`pki-tomcat/{kra,ca}`) and the spawn logs. `ca` also reads the `ipacta` and `akamu` journal-namespace logs. |
+| `oauth2` | The `ahdapa` journal-namespace log. |
 | `kdc` | `krb5kdc.log`. error, crit, and fatal lines. |
 | `samba` | `/var/log/samba`. AD trust. |
 | `dns` | The BIND runtime logs (`named.run`). |
