@@ -8,8 +8,8 @@
 #   images/build.sh [--ipa-from-distro] [options]
 #
 # Options:
-#   --rpms DIR        Directory containing IPA dev-build RPMs (x86_64 +
-#                     noarch, any layout).
+#   --rpms DIR        Directory containing IPA dev-build RPMs (host-arch or
+#                     --distarch + noarch, any layout).
 #   --srpm PATH       Either a path to a single freeipa-*.src.rpm or a
 #                     directory containing them (e.g. dist/srpms from
 #                     `make srpms`). Builds the IPA binary RPMs ourselves
@@ -82,7 +82,9 @@
 #   --add-ipa-package SPEC
 #                     Extra dnf spec added to that default list (repeatable),
 #                     so the list never has to be copied.
-#   --tool TOOL       Container tool: podman (default) or docker.
+#   --distarch ARCH   Target architecture, e.g. aarch64; passed to the
+#                     container tool as --platform. Default: none (build for
+#                     the host platform).
 #
 # Example (validation host):
 #   images/build.sh --rpms /root/rpmbuild/RPMS --sha 962ac6d0e \
@@ -121,7 +123,7 @@ IPA_PACKAGES="freeipa-server freeipa-server-common freeipa-server-dns \
     freeipa-selinux-nfast freeipa-selinux-luna python3-ipaserver \
     python3-ipaclient python3-ipalib python3-ipatests"
 TOOL=podman
-DISTARCH=x86_64
+DISTARCH=
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --rpms) RPMS="$2"; shift 2 ;;
@@ -177,6 +179,10 @@ case "$IPA_FROM" in
 esac
 command -v "$TOOL" >/dev/null || { echo "$TOOL not found" >&2; exit 2; }
 
+# Target architecture: empty = the host platform (no --platform flag).
+PLATFORM_ARGS=()
+[[ -n "$DISTARCH" ]] && PLATFORM_ARGS=(--platform "linux/$DISTARCH")
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORK="$(mktemp -d /tmp/freeipa-ci-build.XXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
@@ -189,6 +195,7 @@ SHA_TAG=""
 if [[ "${BASE:-0}" != "1" ]]; then
     echo "==> Building base image $BASE_IMAGE"
     "$TOOL" build -f "$SCRIPT_DIR/base/Dockerfile" -t "$BASE_IMAGE" \
+        ${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"} \
         --build-arg "DIST=$DIST" "$SCRIPT_DIR/base"
 fi
 
@@ -273,7 +280,8 @@ if [[ -n "$SRPM" ]]; then
     if (( need_build )); then
         echo "==> Building build image $BUILD_IMAGE${COPR_REPOS:+ (COPR: $COPR_REPOS)}"
         BARGS=(build -f "$SCRIPT_DIR/build/Dockerfile" -t "$BUILD_IMAGE" \
-               --build-arg "BASE=$BASE_IMAGE")
+               --build-arg "BASE=$BASE_IMAGE" \
+               ${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"})
         [[ -n "$COPR_REPOS" ]] && BARGS+=(--build-arg "COPR_REPOS=$COPR_REPOS")
         "$TOOL" "${BARGS[@]}"
     fi
@@ -297,6 +305,7 @@ if [[ -n "$SRPM" ]]; then
         BUILD_CMD="set -e; dnf -y builddep /root/build/$(basename "$SRPM_FILE"); $BUILD_CMD"
     fi
     "$TOOL" run --rm \
+        ${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"} \
         --entrypoint /bin/bash \
         -v "$SRPM_DIR":/root/build:z \
         -v "$TOPDIR":/root/rpmbuild:z \
@@ -345,11 +354,14 @@ fi
 # --- build the full image ----------------------------------------------------
 echo "==> Building full image $FULL_IMAGE"
 cp "$SCRIPT_DIR/full/Dockerfile" "$WORK/"
-ARGS=(build -f "$WORK/Dockerfile" -t "$FULL_IMAGE" --build-arg "BASE=$BASE_IMAGE" "$WORK")
+ARGS=(build -f "$WORK/Dockerfile" -t "$FULL_IMAGE" \
+      ${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"} \
+      --build-arg "BASE=$BASE_IMAGE" "$WORK")
 # Provenance of what `freeipa-env show` reports next to the installed builds.
 ARGS+=(--label "org.freeipa-ci.built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
        --label "org.freeipa-ci.dist=$DIST"
        --label "org.freeipa-ci.source=${IPA_FROM:-${SRPM:+srpm}${RPMS:+rpms}}")
+[[ -n "$DISTARCH" ]] && ARGS+=(--label "org.freeipa-ci.arch=$DISTARCH")
 [[ -n "$COPR_REPOS" ]] && ARGS+=(--label "org.freeipa-ci.copr=$COPR_REPOS")
 [[ -n "$IPA_FROM" ]] && ARGS+=(--label "org.freeipa-ci.ipa-packages=$IPA_PACKAGES")
 [[ -n "$PINS" ]] && ARGS+=(--build-arg "PIN_SPECS=$PINS")
