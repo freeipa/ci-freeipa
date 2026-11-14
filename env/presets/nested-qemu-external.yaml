@@ -1,16 +1,20 @@
-# Nested provider on local qemu/KVM VMs, inner external: each host runs on
+# Nested provider on local qemu VMs, inner external: each host runs on
 # its own VM, named after it (vm.vms entries override per-host settings). Hosts reach each other over
 # the private 192.168.100.0/24 network; the control node attaches over the
 # forwarded ssh ports. No containers inside the VMs.
+# The image tag is a multi-arch manifest: the same preset runs on x86_64 and
+# aarch64 hosts (Apple Silicon macOS under hvf, aarch64 Linux under KVM).
 name: nested-qemu-external
 domain: ipa.test
 provider: nested
 inner: external
 vm:
   backend: qemu
+  dns: [8.8.8.8, 1.1.1.1]    # bypass the slirp DNS forwarder (macOS/corp nets)
   image: containerdisk:ghcr.io/freeipa/ci-freeipa-vm-images/fedora-45:latest
   cpus: 4
   disk: 40G
+  guest_packages: [ipa-distro]
 hosts:
   - {role: master, name: master1}
   - {role: client, name: client1}

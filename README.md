@@ -235,7 +235,7 @@ The backends are in `freeipa_env/vmbackend.py`.
 - **`ssh`**: a pool of VMs that already exist. Each entry is `user@host[:port]` in `vm.hosts`. `terminate` does nothing. Use this as a simple reference.
 - **`command`**: runs your scripts. `vm.provision_cmd <count>` prints the VM handles. Print one `user@host[:port]` per line, or a JSON list. `vm.deprovision_cmd <handle>` removes a VM. This is the general integration point for a cloud API. Wrap any cloud in two scripts. See `examples/nested/`.
 - **`openstack`**: an example that uses the `openstack` CLI. It runs `server create`, `show`, and `delete`, and it uses floating IPs. Use it as a template for other clouds.
-- **`qemu`**: local VMs under qemu and KVM on the control node. There is no cloud API.
+- **`qemu`**: local VMs under qemu on the control node: KVM on Linux, Apple hvf on macOS. There is no cloud API.
 - **`krun`**: the same local VMs, as libkrun microVMs instead of qemu. See [The krun backend](#the-krun-backend).
 
 #### The qemu backend
@@ -246,7 +246,14 @@ The backends are in `freeipa_env/vmbackend.py`.
 - Each VM has a private NIC on `192.168.100.0/24`. `vm1` gets `.10`, `vm2` gets `.11`, and so on. The VMs have each other in `/etc/hosts`, so they can reach each other by name.
 - `vm.vms` sets `name`, `image`, `cpus`, `memory`, and `disk` for each VM. `vm.count` must equal the length of `vm.vms`. With `inner: external`, `memory` comes from each host's `resources` entry instead, and a `memory` key in the vm block is an error.
 - `terminate` stops the qemu process and removes the overlay. The `console.log` file stays in `vm.state_dir`.
-- You need `/dev/kvm` and the host packages below.
+- `vm.dns` (optional) sets the guest's nameservers, bypassing the slirp DNS forwarder (`10.0.2.3`, which uses the host's resolvers — on networks where those do not answer the guest, e.g. corporate macOS hosts, point it at public resolvers).
+- `vm.image` is a file, a `containerdisk:` reference, or an `http(s)://` URL. A URL is downloaded once to `~/.cache/freeipa-ci/images/<basename>` (no checksum verification: for reproducibility, compare the file with the published `CHECKSUM` before the first `up`).
+- `vm.arch` (default: the host arch, with `arm64` normalized to `aarch64`) picks the guest architecture: `qemu-system-<arch>` is then used. `aarch64` guests get the `virt` machine and a UEFI firmware; x86_64 guests keep `q35` and SeaBIOS.
+- `vm.accel` (default: auto) picks the accelerator: `hvf` on macOS, `kvm` when `/dev/kvm` is writable, else `tcg`. Explicit values: `hvf`, `kvm`, `tcg`.
+- `vm.cpu` (default: `host` under kvm/hvf, `max` under tcg) and `vm.machine` (informational: the backend derives it from the arch) can override the defaults.
+- `vm.firmware` (aarch64 only) overrides the UEFI firmware auto-discovery, which looks next to the qemu binary (`<brew-prefix>/share/qemu/edk2-aarch64-code.fd`, the Homebrew layout) and in the usual distro paths (`/usr/share/edk2/aarch64/QEMU_EFI.fd`, ...).
+- You need `/dev/kvm` only when the accelerator is `kvm` (an x86_64 Linux host, or an explicit `accel: kvm`); hvf on macOS and tcg need nothing. The host packages are below.
+- USB passthrough and `gpu: virgl` need a Linux host: their host-side paths (`/sys/bus/usb`, `/dev/dri/...`) do not exist on macOS.
 
 #### The krun backend
 
@@ -280,6 +287,8 @@ vm:
 - The Fedora 45 qemu presets (`nested-qemu`, `nested-qemu-external`, `nested-qemu-mixed`, `qemu-copr-customized_ds_config_install`) use `containerdisk:ghcr.io/freeipa/ci-freeipa-vm-images/fedora-45:latest`, which [ci-freeipa-vm-images](https://github.com/freeipa/ci-freeipa-vm-images) builds, updates and tests. That is an updated image, so it may be newer than the file images. They need podman for the pull. The Fedora 44 image of the mixed presets is still a file until the registry has it.
 
 I tested it with a local image: `publish.sh` built a containerdisk from the Fedora 44 cloud image, and the qemu backend booted a VM from it in 17 s. I did not pull from a real registry, and I did not run it on Testing Farm.
+
+- The published `ci-freeipa-vm-images` tags are linux/amd64 today. On aarch64 use the Fedora cloud image URL instead (as the `*-aarch64` presets do), until multi-arch manifests exist.
 
 #### GPU: virgl
 
@@ -315,6 +324,9 @@ These packages are required:
 ```
 sudo dnf install qemu-system-x86-core qemu-img genisoimage rsync openssh-clients
 ```
+
+On macOS (Apple Silicon): `brew install qemu xorriso` (qemu includes
+`qemu-img`; add `podman` only for `containerdisk:` images).
 
 You can use `xorriso` or `mkisofs` instead of `genisoimage`.
 
@@ -449,6 +461,53 @@ The nested provider runs on the **control node**. The control node is a CI machi
 
 A queue of `provider: nested` presets runs under the `freeipa-env queue` supervisor. It runs on a control-node `--runner`. Each job provisions its own VMs.
 
+## Running on macOS (Apple Silicon)
+
+Both lanes work on macOS; the control node stays this machine, no lima.
+
+**VM lane (qemu, Apple hvf).** `brew install qemu xorriso`, then run the
+aarch64 preset:
+
+```sh
+freeipa-env up    env/presets/qemu-smoke-aarch64.yaml
+freeipa-env run   env/presets/qemu-smoke-aarch64.yaml
+freeipa-env down  env/presets/qemu-smoke-aarch64.yaml
+```
+
+The VM runs under Apple's Hypervisor.framework (`hvf`, near-native speed),
+boots from the Fedora aarch64 cloud image (downloaded once to
+`~/.cache/freeipa-ci/images/`), and the UEFI firmware bundled with brew's
+qemu is found automatically. GitHub macOS runners cannot use
+Hypervisor.framework, so there is no macOS VM job in CI; local runs are the
+proof. If `hvf` is unavailable, `vm.accel: tcg` falls back to emulation
+(slow). USB passthrough and `gpu: virgl` need a Linux host.
+
+**Container lane (podman machine).** `brew install podman`, then:
+
+```sh
+podman machine init --cpus 4 --memory 8192    # new machine
+podman machine set -m 8192                    # existing one; restarts it
+bash images/build.sh --dist 45 --tag freeipa-distro --ipa-from-distro
+```
+
+The machine builds aarch64 images natively (a 3500 MiB master container
+needs more than the 4 GiB default machine). Any podman preset then runs
+unchanged with `image: freeipa-distro/full:45` — the whole validated podman
+flow runs inside the machine.
+
+The podman machine shares only your home directory with its VMs (virtiofs):
+keep the `--workdir` of podman-lane runs under `$HOME` (e.g.
+`~/macos-smoke`). A workdir in `/tmp` fails at the first volume mount
+(`statfs ... no such file or directory`). The qemu lane has no such limit.
+
+**aarch64 image builds.** `images/build.sh --distarch aarch64` passes
+`--platform linux/aarch64` to the container tool: native on arm hosts
+(including a macOS podman machine); cross-builds from x86_64 need
+qemu-user emulation and are slow. The tag scheme is arch-less — aarch64
+builds on a shared host use a distinct `--tag`. Multi-arch containerdisks
+would come from [ci-freeipa-vm-images](https://github.com/freeipa/ci-freeipa-vm-images)
+(a separate repository).
+
 ## Artifacts
 
 `run` writes these files:
@@ -560,6 +619,8 @@ If the workdir has a `results.yaml` for each stage, the report adds a `Stages` t
 
 - `presets/base-xmlrpc.yaml`: the Azure **xmlrpc** job. One master, DNS and KRA, and `test_xmlrpc` without `test_dns_plugin.py`.
 - `presets/external-smoke.yaml`: a template for external provider smoke tests.
+- `presets/qemu-smoke-aarch64.yaml`: the `qemu-smoke` counterpart on a Fedora 45 aarch64 cloud image (Apple Silicon macOS under hvf, aarch64 Linux under KVM, elsewhere tcg).
+- `presets/nested-qemu-external-aarch64.yaml`: the `nested-qemu-external` counterpart on the aarch64 cloud image: master + client on their own VMs, `inner: external`.
 - `presets/azure/`: one preset for each Azure CI job. These presets recreate `ipatests/azure/azure_definitions/{base,gating}-fedora.yml`.
 
 | Preset (`presets/azure/`) | Azure job | Hosts | Suite |

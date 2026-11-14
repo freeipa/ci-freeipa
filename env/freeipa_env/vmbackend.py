@@ -13,8 +13,9 @@ Backends:
                     cloud-API integration point (wrap any cloud in 2 scripts).
   * ``openstack``-- a concrete real-API example (openstack CLI); the
                     template for any other cloud.
-  * ``qemu``     -- local VMs under qemu/KVM on the control node (qcow2
-                    overlay + cloud-init seed; ssh over a forwarded port).
+  * ``qemu``     -- local VMs under qemu on the control node (qcow2 overlay
+                    + cloud-init seed; ssh over a forwarded port): x86_64 or
+                    aarch64 guests, KVM on Linux, Apple hvf on macOS.
   * ``krun``     -- the same on libkrun microVMs (see KrunBackend).
 
 VMHandle is the currency between a backend and the nested provider: an ssh
@@ -26,6 +27,7 @@ import ctypes
 import glob
 import json
 import os
+import platform
 import re
 import shlex
 import shutil
@@ -34,6 +36,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.request
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -559,11 +562,26 @@ def _qemu_pid(pidfile: str, vm_id: str) -> Optional[int]:
     try:
         with open(pidfile) as f:
             pid = int(f.read().strip())
-        with open(f'/proc/{pid}/cmdline', 'rb') as f:
-            cmd = f.read()
     except (OSError, ValueError):
         return None
-    return pid if vm_id.encode() in cmd else None
+    try:
+        with open(f'/proc/{pid}/cmdline', 'rb') as f:
+            cmd = f.read()
+        if vm_id.encode() in cmd:
+            return pid
+    except OSError:
+        pass          # no /proc (macOS): fall through to ps
+    return _qemu_pid_ps(pid, vm_id)
+
+
+def _qemu_pid_ps(pid: int, vm_id: str) -> Optional[int]:
+    """macOS and other hosts without /proc: ask ps for the command line."""
+    try:
+        p = subprocess.run(['ps', '-p', str(pid), '-o', 'command='],
+                           capture_output=True, text=True)
+    except OSError:
+        return None
+    return pid if vm_id in p.stdout else None
 
 
 def live_qemu_vms(state_dir: str = '~/.cache/freeipa-ci/qemu') -> dict:
@@ -590,25 +608,41 @@ def stop_qemu(pid: int, grace: int = 30):
 
 
 class QemuBackend(VMBackend):
-    """Local VMs under qemu/KVM on the control node: no cloud API.
+    """Local VMs under qemu on the control node: no cloud API.
 
-    Each VM is a qcow2 overlay on a cloud base image, booted with KVM and
-    user-mode NAT networking. A cloud-init NoCloud seed authorizes the ssh
-    public key for root; ssh reaches the guest on a host port forwarded to
-    its port 22 on 127.0.0.1. Per-VM state lives in ``<state_dir>/<id>/``.
+    Each VM is a qcow2 overlay on a cloud base image, booted with hardware
+    acceleration (KVM on Linux, Apple hvf on macOS) and user-mode NAT
+    networking. A cloud-init NoCloud seed authorizes the ssh public key for
+    root; ssh reaches the guest on a host port forwarded to its port 22 on
+    127.0.0.1. Per-VM state lives in ``<state_dir>/<id>/``.
 
     Config::
 
         vm:
           backend: qemu
           image: ~/images/Fedora-Cloud-Base-Generic.x86_64.qcow2  # required
+                                        #   (a http(s):// URL is downloaded
+                                        #   to ~/.cache/freeipa-ci/images/;
+                                        #   a containerdisk:REF is pulled for
+                                        #   the arch the VM boots, so one
+                                        #   multi-arch tag serves both arches)
+          arch: aarch64                # default: host arch (arm64 is
+                                        #   normalized to aarch64);
+                                        #   qemu-system-<arch> is then used
+          accel: hvf                   # default: auto — hvf on macOS, kvm
+                                        #   with a writable /dev/kvm, else tcg
+          machine: virt                # default: q35 (x86_64) | virt (aarch64)
+          cpu: host                    # default: host (kvm/hvf) | max (tcg)
+          firmware: /path/QEMU_EFI.fd  # aarch64 only; default: auto-discovered
+          dns: [8.8.8.8, 1.1.1.1]     # optional; guest nameservers, bypassing
+                                        #   the slirp DNS forwarder 10.0.2.3
           cpus: 4                       # default 4
           memory: 8192                  # MiB, default 8192
           disk: 40G                     # overlay virtual size, default 40G
           ssh_key: ~/.ssh/id_ed25519    # default: every ~/.ssh/{id_ed25519,
                                         #   id_ecdsa,id_rsa}.pub is authorized
           state_dir: ~/.cache/freeipa-ci/qemu   # default
-          qemu: qemu-system-x86_64              # default
+          qemu: qemu-system-aarch64     # default: qemu-system-<arch>
           gpu: virgl                    # optional; virtio-gpu with host OpenGL
           render_node: /dev/dri/renderD128   # default, for gpu: virgl
           usb: [VVVV:PPPP]              # optional, per VM; host USB devices by
@@ -619,6 +653,9 @@ class QemuBackend(VMBackend):
                                         #   vm.count must equal len(vms)
             - {name: master1, cpus: 8, memory: 16384}
             - {name: client1, image: ~/images/other.qcow2, disk: 20G}
+
+    USB passthrough and ``gpu: virgl`` need a Linux host: their host-side
+    paths (/sys/bus/usb, /dev/dri/...) do not exist on macOS.
 
     ``terminate`` kills the qemu process and removes the overlay and seed;
     ``console.log`` is kept for triage.
@@ -634,8 +671,75 @@ class QemuBackend(VMBackend):
     def _tools(self):
         return [self._qemu(), 'qemu-img']
 
+    def _needs_kvm(self):
+        """Whether this backend requires /dev/kvm, whatever the accel says."""
+        return self._accel(self._arch()) == 'kvm'
+
+    def _qemu_system_args(self):
+        """-machine/-accel/-cpu and the aarch64 UEFI firmware drive."""
+        arch = self._arch()
+        accel = self._accel(arch)
+        fw = self._firmware(arch)
+        args = self._machine_args(arch, accel, self._cpu(accel))
+        if fw:
+            args += ['-drive', f'if=pflash,format=raw,readonly=on,file={fw}']
+        return args
+
+    def _arch(self):
+        """Normalized target arch: cfg `arch`, else the host's (arm64 →
+        aarch64)."""
+        arch = self.cfg.get('arch') or platform.machine()
+        if arch == 'arm64':
+            arch = 'aarch64'
+        return arch
+
+    def _accel(self, arch):
+        """The accelerator: cfg `accel`, else auto (hvf on macOS, kvm with
+        a writable /dev/kvm, tcg otherwise)."""
+        accel = self.cfg.get('accel')
+        if accel is None:
+            if sys.platform == 'darwin':
+                return 'hvf'
+            if os.access('/dev/kvm', os.W_OK):
+                return 'kvm'
+            return 'tcg'
+        if accel not in ('hvf', 'kvm', 'tcg'):
+            raise VMBackendError(f'qemu backend: unknown accel {accel!r} '
+                                 f'(known: hvf, kvm, tcg)')
+        return accel
+
     def _qemu(self):
-        return self.cfg.get('qemu', 'qemu-system-x86_64')
+        return self.cfg.get('qemu', f'qemu-system-{self._arch()}')
+
+    def _cpu(self, accel):
+        """-cpu host is invalid under tcg on both arches."""
+        return self.cfg.get('cpu') or ('host' if accel in ('kvm', 'hvf')
+                                       else 'max')
+
+    def _machine_args(self, arch, accel, cpu):
+        if arch == 'aarch64':
+            return ['-machine', 'virt', '-accel', accel, '-cpu', cpu]
+        return ['-machine', f'q35,accel={accel}', '-cpu', cpu]
+
+    def _firmware(self, arch):
+        """UEFI firmware for aarch64 guests (None on x86_64: SeaBIOS)."""
+        if arch != 'aarch64':
+            return None
+        candidates = [self.cfg.get('firmware')]
+        q = shutil.which(self._qemu())
+        if q:
+            prefix = os.path.dirname(os.path.dirname(q))
+            candidates.append(os.path.join(
+                prefix, 'share', 'qemu', 'edk2-aarch64-code.fd'))
+        candidates += ['/usr/share/edk2/aarch64/QEMU_EFI.fd',
+                       '/usr/share/qemu-efi-aarch64/QEMU_EFI.fd',
+                       '/usr/share/qemu/edk2-aarch64-code.fd']
+        for c in candidates:
+            if c and os.path.isfile(c):
+                return c
+        raise VMBackendError(
+            'qemu backend: no aarch64 UEFI firmware found (set vm.firmware; '
+            f'looked in: {[c for c in candidates if c]})')
 
     def _vm_cfgs(self, count):
         """Per-VM settings: top-level config, overridden by vms[i] if given."""
@@ -660,7 +764,7 @@ class QemuBackend(VMBackend):
                 raise VMBackendError(
                     f'{self.name} backend: base image not found: {image}')
             _check_disk(os.path.expanduser(image), c.get('disk', '40G'))
-        if not os.access('/dev/kvm', os.W_OK):
+        if self._needs_kvm() and not os.access('/dev/kvm', os.W_OK):
             raise VMBackendError(f'{self.name} backend: /dev/kvm is not writable '
                                  '(needs KVM and access to /dev/kvm)')
         for tool in self._tools():
@@ -729,8 +833,15 @@ class QemuBackend(VMBackend):
                                 *files]}
         if runcmd:
             user['runcmd'] = list(runcmd)
+        # The slirp DNS forwarder (10.0.2.3) uses the host's resolvers; on
+        # networks where those do not answer the guest, vm.dns overrides
+        # them per VM (default: none, keep the forwarder).
+        dnscfg = {}
+        if self.cfg.get('dns'):
+            dnscfg = {'nameservers': {'addresses': list(self.cfg['dns'])}}
         netcfg = {'version': 2, 'ethernets': {
-            'ssh': {'match': {'macaddress': net['mac_ssh']}, 'dhcp4': True},
+            'ssh': {'match': {'macaddress': net['mac_ssh']}, 'dhcp4': True,
+                    **dnscfg},
             'priv': {'match': {'macaddress': net['mac_priv']},
                      'addresses': [f"{net['ip']}/24"]}}}
         with open(os.path.join(vmdir, 'user-data'), 'w') as f:
@@ -739,6 +850,25 @@ class QemuBackend(VMBackend):
             f.write(f"instance-id: {vm_id}\nlocal-hostname: {net['name']}\n")
         with open(os.path.join(vmdir, 'network-config'), 'w') as f:
             f.write(yaml.safe_dump(netcfg))
+
+
+    def _fetch(self, url):
+        """A cached local copy of an http(s):// image, downloaded to
+        ~/.cache/freeipa-ci/images/<basename>."""
+        dest = os.path.join(os.path.expanduser('~/.cache/freeipa-ci/images'),
+                            os.path.basename(url))
+        if os.path.isfile(dest):
+            return dest
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        try:
+            urllib.request.urlretrieve(url, dest)
+        except Exception as e:
+            try:
+                os.remove(dest)
+            except OSError:
+                pass
+            raise VMBackendError(f'qemu backend: downloading {url} failed: {e}')
+        return dest
 
     def _display_args(self, c, q):
         """No display, or virtio-gpu with host OpenGL (virgl) rendered on
@@ -810,7 +940,7 @@ class QemuBackend(VMBackend):
             self._seed(vmdir, vm_id, keys, net)
             self._overlay(c, disk)
             self._run([self._qemu(), '-name', vm_id,
-                       '-machine', 'q35,accel=kvm', '-cpu', 'host',
+                       *self._qemu_system_args(),
                        '-smp', str(c.get('cpus', 4)),
                        '-m', str(c.get('memory', 8192)),
                        *self._display_args(c, q), *_usb_args(c),
@@ -847,12 +977,26 @@ class QemuBackend(VMBackend):
         pulled = {}
         for c in cfgs:
             if c.get('image'):
+                # the arch this VM will boot (per-VM `arch` included), so a
+                # multi-arch containerdisk yields its matching member (and
+                # a tag without that member fails here, not at boot)
+                arch = c.get('arch') or self._arch()
+                if arch == 'arm64':
+                    arch = 'aarch64'
+                key = (c['image'], arch)
                 try:
-                    if c['image'] not in pulled:
-                        pulled[c['image']] = containerdisk.resolve(c['image'])
+                    if key not in pulled:
+                        pulled[key] = containerdisk.resolve(c['image'], arch)
                 except containerdisk.ContainerDiskError as e:
                     raise VMBackendError(f'{self.name} backend: {e}')
-                c['image'] = pulled[c['image']]
+                c['image'] = pulled[key]
+        for c in cfgs:
+            image = c.get('image') or ''
+            if image.startswith(('http://', 'https://')):
+                fetched = self._fetch(image)
+                for d in cfgs:
+                    if d.get('image') == image:
+                        d['image'] = fetched
         return cfgs
 
     def _nets(self, cfgs):
@@ -943,8 +1087,13 @@ class KrunBackend(QemuBackend):
     """
     name = 'krun'
     _VM_FILES = QemuBackend._VM_FILES + ('seed.img', 'network-config', 'vm.json')
-    _UNSUPPORTED = ('gpu', 'render_node', 'usb', 'qemu', 'tpm')
+    _UNSUPPORTED = ('gpu', 'render_node', 'usb', 'qemu', 'tpm', 'arch',
+                    'accel', 'cpu', 'machine', 'firmware')
     _MAX_VCPUS = 16
+
+    def _needs_kvm(self):
+        return True     # libkrun is KVM-only, whatever _accel() would say
+
     _MAX_DIR = 83   # unix socket paths are 107 bytes; longest: <vmdir>/krun-net-<7 digit pid>-0.sock
 
     def _tools(self):

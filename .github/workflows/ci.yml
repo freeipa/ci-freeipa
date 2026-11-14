@@ -15,7 +15,10 @@ permissions:
 
 jobs:
   unit:
-    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -25,6 +28,36 @@ jobs:
           sudo apt-get install -y --no-install-recommends qemu-utils podman python3-yaml python3-pytest
       - name: Tests
         run: python3 -m pytest env/tests -q
+
+  # The same suite on macOS: proves the control-node Python is macOS-clean
+  # (the qemu backend's ps fallback, no /proc, no /dev/kvm). No VMs here:
+  # GitHub macOS runners cannot use Hypervisor.framework.
+  unit-macos:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: |
+          python3 -m pip install --user pytest pyyaml ||
+              brew install pyyaml pytest
+      - name: Tests
+        run: python3 -m pytest env/tests -q
+
+  # Native aarch64 image build (no emulation): proves --distarch bakes an
+  # arm64 channel image with the provenance label.
+  arm-image:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the aarch64 channel image
+        run: bash images/build.sh --dist 45 --tag freeipa-ci --ipa-from-distro --distarch aarch64
+      - name: Check the image architecture
+        run: |
+          arch="$(podman image inspect freeipa-ci/full:45 --format '{{.Architecture}}')"
+          [ "$arch" = arm64 ] || { echo "::error::architecture is $arch, expected arm64"; exit 1; }
+          podman image inspect freeipa-ci/full:45 --format '{{index .Labels "org.freeipa-ci.arch"}}' | grep -qx aarch64
 
   # Boots a VM from the published Fedora 45 image and installs a FreeIPA
   # server on it with this checkout's freeipa-env: the qemu backend, the
