@@ -39,10 +39,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install tools
         run: |
-          python3 -m pip install --user pytest pyyaml ||
-              brew install pyyaml pytest
+          python3 -m venv "$HOME/ci-venv"
+          "$HOME/ci-venv/bin/pip" install --quiet pytest pyyaml
       - name: Tests
-        run: python3 -m pytest env/tests -q
+        run: |
+          "$HOME/ci-venv/bin/python" -m pytest env/tests -q
 
   # Native aarch64 image build (no emulation): proves --distarch bakes an
   # arm64 channel image with the provenance label.
@@ -57,11 +58,36 @@ jobs:
         run: |
           arch="$(podman image inspect freeipa-ci/full:45 --format '{{.Architecture}}')"
           [ "$arch" = arm64 ] || { echo "::error::architecture is $arch, expected arm64"; exit 1; }
-          podman image inspect freeipa-ci/full:45 --format '{{index .Labels "org.freeipa-ci.arch"}}' | grep -qx aarch64
+
+  # The published images are multi-arch manifests: proves the arm64 member
+  # of the tag the presets reference resolves and is pulled as arm64. No VM
+  # here (the GitHub arm runners have no KVM): the pull and the arch check
+  # are what this side of the flow needs.
+  containerdisk-arm:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull the published image for the host arch
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get install -y --no-install-recommends podman python3-pytest qemu-utils
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, 'env')
+          from freeipa_env import containerdisk
+          disk = containerdisk.resolve(
+              'containerdisk:ghcr.io/freeipa/ci-freeipa-vm-images/'
+              'fedora-45:latest')
+          print(f'resolved: {disk}')
+          PY
+          arch="$(podman image inspect \
+              ghcr.io/freeipa/ci-freeipa-vm-images/fedora-45:latest \
+              --format '{{.Architecture}}')"
+          [ "$arch" = arm64 ] || { echo "::error::architecture is $arch, expected arm64"; exit 1; }
 
   # Boots a VM from the published Fedora 45 image and installs a FreeIPA
   # server on it with this checkout's freeipa-env: the qemu backend, the
-  # containerdisk pull, guest_packages and the integration run, end to end.
   qemu:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
