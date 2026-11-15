@@ -33,7 +33,7 @@ import shutil
 
 import yaml
 
-from . import guest_settings, queue, samba_ad
+from . import guest_settings, paths, samba_ad
 from .envspec import EnvSpec
 from .external_provider import ExternalProvider
 from .vmbackend import (VMHandle, make_backend, rsync_from, rsync_to,
@@ -226,11 +226,12 @@ class NestedProvider:
     # ---------------------------------------------------------------- bootstrap
     def _bootstrap(self, vm):
         """Ship the ci-freeipa tree + inner spec to the VM, ensure the image."""
-        local_ci = os.path.dirname(queue.ENVROOT)          # repo root
-        remote_ci_parent = os.path.dirname(self._remote_ci())
+        remote_ci = self._remote_ci()
         print(f'== vm {vm.target}: rsync ci-freeipa tree '
-              f'({local_ci} -> {remote_ci_parent})')
-        rsync_to(vm, local_ci, remote_ci_parent)
+              f'({paths.CI_ROOT} -> {remote_ci})')
+        for src, rel in paths.ship_sources():
+            dst = remote_ci if not rel else f'{remote_ci}/{rel}'
+            rsync_to(vm, src.rstrip('/') + '/', dst + '/')
         state_rwd = self._remote_workdir()
         ssh_run(vm, f'mkdir -p {self._rpath(state_rwd)}', check=True)
         inner_local = os.path.join(self.workdir, 'inner-env.yaml')

@@ -26,6 +26,7 @@ import os
 import subprocess
 import sys
 
+from . import paths
 from .image import channel_name, channel_tag, is_channel
 
 
@@ -35,9 +36,7 @@ class ImageBuildError(Exception):
 
 def _images_dir():
     """Directory holding images/build.sh (the repo's images tree)."""
-    # This file is env/freeipa_env/imagemake.py -> up 2 dirs is the repo root.
-    return os.path.abspath(os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), '..', '..', 'images'))
+    return paths.IMAGES_DIR
 
 
 def _build_sh():

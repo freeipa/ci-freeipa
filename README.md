@@ -13,6 +13,17 @@ Use these guides for specific tasks:
 - To test a FreeIPA worktree with an agent, read [ci-freeipa-worktree](.agents/skills/ci-freeipa-worktree/SKILL.md).
 - To test the packages that a Fedora release ships, read [Podman images: the packages Fedora ships](#podman-images-the-packages-fedora-ships-the-default) and [ci-freeipa-distro-packages](.agents/skills/ci-freeipa-distro-packages/SKILL.md). You do not need a checkout, a build, or a COPR repository.
 
+## Install
+
+    python3 -m pip install git+https://github.com/freeipa/ci-freeipa
+
+or, from a checkout, `python3 -m pip install .`. This installs the
+`freeipa-env` command together with the preset catalog; it needs
+Python >= 3.9 (PyYAML is installed automatically). The tools each
+provider needs (podman, qemu, ssh, rsync) are not Python packages:
+install them as documented in the sections below. An editable install
+(`pip install -e .`) runs from the checkout and uses its tree directly.
+
 ## Contents
 
 - [Repository split](#repository-split)
