@@ -23,7 +23,7 @@ import os
 
 import yaml
 
-ENVROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from .paths import ENVROOT
 
 # Presets and queues that `blend` writes. They are outputs, not sources, so
 # they live in the cache; a queue names them as generated/<name>/<job>.yaml,

@@ -28,9 +28,9 @@ import sys
 import yaml
 
 from . import queue
+from .paths import CI_ROOT
 
 KEYS = {'build', 'build_image', 'presets', 'queue'}
-CI_ROOT = os.path.dirname(queue.ENVROOT)
 PLAN = 'ci/tmt/plans/freeipa-env.fmf'
 
 

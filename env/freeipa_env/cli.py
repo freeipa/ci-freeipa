@@ -32,9 +32,9 @@ from .mdreport import render_markdown
 from . import container as container_mode
 from .detached import LocalDetached
 from . import summary as xsummary
+from .paths import CI_ROOT, ENVROOT
 
-SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__))), 'scripts')
+SCRIPTS_DIR = os.path.join(ENVROOT, 'scripts')
 RUN_SCRIPT = os.path.join(SCRIPTS_DIR, 'run-base-tests.sh')
 CONTAINER_LOGSDIR = '/root/ipa-env/logs'
 CONFIG_IN_CONTAINER = '/root/.ipa/ipa-test-config.yaml'
@@ -1309,9 +1309,8 @@ def _tf_config(args):
     ipa_from = getattr(args, 'ipa_from', None)
     if not src and (ipa_from == 'distro' or (
             ipa_from == 'copr' and not getattr(args, 'tf_repo_url', None))):
-        from .runner import REPO_CI_DIR
         from .testingfarm import DISTRO_PLAN
-        src = REPO_CI_DIR
+        src = CI_ROOT
         plan = plan or DISTRO_PLAN
     repo_url = getattr(args, 'tf_repo_url', None)
     if not repo_url:

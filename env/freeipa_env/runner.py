@@ -43,9 +43,7 @@ import subprocess
 import time
 
 from . import queue as _queue
-from .queue import ENVROOT
-
-REPO_CI_DIR = os.path.dirname(ENVROOT)  # the ci-freeipa tree root
+from . import paths
 
 
 class Runner:
@@ -168,7 +166,9 @@ class SshRunner(Runner):
     def bootstrap(self, remote_ci):
         """rsync the local ci-freeipa tree to the runner (``~/...`` expands
         remotely against the ssh user's home)."""
-        self._rsync(REPO_CI_DIR + '/', f'{remote_ci}/')
+        for src, rel in paths.ship_sources():
+            dst = remote_ci if not rel else f'{remote_ci}/{rel}'
+            self._rsync(src + '/', dst + '/')
         self.ship_generated(remote_ci)
 
     def ship_file(self, local, remote_dir):
@@ -228,7 +228,9 @@ class LocalRunner(Runner):
         """Copy the local ci-freeipa tree to the runner location (local copy)."""
         dst = self._p(remote_ci)
         try:
-            shutil.copytree(REPO_CI_DIR, dst, dirs_exist_ok=True)
+            for src, rel in paths.ship_sources():
+                target = os.path.join(dst, rel) if rel else dst
+                shutil.copytree(src, target, dirs_exist_ok=True)
         except OSError as e:
             raise RunnerTransportError(
                 f'local runner: copy to {dst} failed: {e}')
