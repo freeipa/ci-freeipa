@@ -6,6 +6,7 @@ description: Investigate or develop FreeIPA changes using ci-freeipa to build th
 # Test a FreeIPA worktree with ci-freeipa
 
 Use this when a request involves investigating, developing, or validating FreeIPA changes against a real master, replica, client, or other multihost topology. ci-freeipa is a separate checkout from the FreeIPA worktree. Read its `README.md`, the relevant `env/presets/` examples, and the selected FreeIPA tests before choosing a workflow; the tools and image contents evolve.
+ci-freeipa itself is used as a checkout (the form in these examples) or as an installed package: `python3 -m pip install git+https://github.com/freeipa/ci-freeipa` — or `pip install .` from a checkout — installs a `freeipa-env` command that works from any cwd (README "Install"). An installed package carries the preset catalog, `scripts/` and `images/` inside itself, under `freeipa_env/_data`; `python3 -c 'from freeipa_env import paths; print(paths.CI_ROOT)'` prints that tree root. `up`/`run`/`queue run` take real file paths in both modes; only `blend` also resolves catalog names (`presets/...`).
 
 To test the unmodified packages a Fedora release ships (no worktree, no COPR repository), use [ci-freeipa-distro-packages](../ci-freeipa-distro-packages/SKILL.md) instead.
 
@@ -22,7 +23,7 @@ To test the unmodified packages a Fedora release ships (no worktree, no COPR rep
 
 The SRPM helper initializes submodules, generates build files, and runs `git checkout po/*.po`. Never run it blindly on a user's worktree: that checkout can discard translation changes. Use an independent staging checkout with a separate Git directory, copy the complete current tree including needed untracked files, and preserve/inspect modified submodules and ignored build inputs explicitly. Verify that the resulting SRPM contains the actual changed files, particularly new tests and files needed by packaging; copying an untracked file alone does not guarantee it is included in a distribution tarball. Do not claim the worktree was tested until installed contents match it.
 
-Build to a **unique image repository**, not the user's existing channel tags. For example, after producing the verified SRPM, from the ci-freeipa root:
+Build to a **unique image repository**, not the user's existing channel tags. `images/build.sh` is cwd-independent, so only its path differs between modes: `./images/build.sh ...` from the ci-freeipa checkout root, or `<CI_ROOT>/images/build.sh ...` when ci-freeipa is an installed package (`CI_ROOT` = `python3 -c "from freeipa_env import paths; print(paths.CI_ROOT)"`). For example, after producing the verified SRPM:
 
 ```sh
 ./images/build.sh --srpm /absolute/path/to/srpms --dist 45 \

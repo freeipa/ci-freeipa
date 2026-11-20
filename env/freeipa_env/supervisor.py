@@ -42,7 +42,8 @@ import shlex
 import threading
 import time
 
-from .runner import REPO_CI_DIR, RunnerTransportError
+from .paths import CI_ROOT
+from .runner import RunnerTransportError
 
 
 class SupervisorError(Exception):
@@ -154,7 +155,7 @@ class Supervisor:
                     self._log(f'[{r.spec}] bootstrap: not needed (the TF '
                               'pipeline clones the repo itself)')
                     continue
-                self._log(f'[{r.spec}] syncing {REPO_CI_DIR}/ -> '
+                self._log(f'[{r.spec}] syncing {CI_ROOT}/ -> '
                           f'{self.remote_ci}/')
                 r.bootstrap(self.remote_ci)
         # prebuild the queue's channel images before any job starts: either

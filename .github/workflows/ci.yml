@@ -45,6 +45,26 @@ jobs:
         run: |
           "$HOME/ci-venv/bin/python" -m pytest env/tests -q
 
+  packaging:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build, install and smoke-test the package
+        run: |
+          python3 -m venv "$HOME/pkg-venv"
+          "$HOME/pkg-venv/bin/pip" install --quiet .
+          "$HOME/pkg-venv/bin/freeipa-env" --help >/dev/null
+          "$HOME/pkg-venv/bin/python" - <<'PY'
+          import os, sys
+          from freeipa_env import paths
+          assert os.path.isdir(os.path.join(paths.ENVROOT, 'presets'))
+          script = os.path.join(paths.ENVROOT, 'freeipa-env')
+          assert os.access(script, os.X_OK), script
+          print('installed tree:', paths.CI_ROOT)
+          PY
+          "$HOME/pkg-venv/bin/freeipa-env" check
+
   # Native aarch64 image build (no emulation): proves --distarch bakes an
   # arm64 channel image with the provenance label.
   arm-image:

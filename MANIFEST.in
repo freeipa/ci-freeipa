@@ -1,0 +1,10 @@
+include COPYING
+include env/freeipa-env
+recursive-include env/freeipa_env *.py
+recursive-include env/presets *.yaml
+recursive-include env/examples *
+recursive-include env/scripts *.sh
+recursive-include images *
+recursive-include scripts *.sh
+recursive-include queues *.yaml
+global-exclude __pycache__ *.pyc
