@@ -6,6 +6,7 @@ description: Run FreeIPA test suites against the FreeIPA packages a Fedora relea
 # Test the FreeIPA packages Fedora ships with ci-freeipa
 
 Use this when the request is to test FreeIPA "as in Fedora N", "the packages already in Fedora", or a base/gating suite against a release, and nothing has to be built. For a FreeIPA worktree or packages from a COPR repository use [ci-freeipa-worktree](../ci-freeipa-worktree/SKILL.md) instead. Read `README.md` ("Test the packages Fedora ships") before starting; the tools evolve.
+ci-freeipa can be a checkout or an installed package (`python3 -m pip install git+https://github.com/freeipa/ci-freeipa`; README "Install"): the installed `freeipa-env` command works from any cwd and ships the preset catalog, `scripts/` and `images/` inside itself. Where the examples below say `./env/freeipa-env` and `bash images/build.sh`, an install uses just `freeipa-env` and `<CI_ROOT>/images/build.sh` (`CI_ROOT` = `python3 -c "from freeipa_env import paths; print(paths.CI_ROOT)"`). The podman/qemu/ssh/rsync tools are not Python packages; install them separately as the README documents.
 
 This is ci-freeipa's default lane: when no SRPM, RPM directory or COPR repository is named, the image bake runs `dnf install` of every IPA subpackage, including `python3-ipatests`, from the release's `fedora` and `updates` repositories. The tests therefore come from the same release as the packages. `updates-testing` is not enabled. `--ipa-from-distro` states the lane explicitly and refuses `--copr` and `--srpm`. Adding `--copr OWNER/PROJECT` to any command here switches to the COPR's builds (same flow, also on Testing Farm); the result is then no longer the distribution's and `show` must print `source: copr`.
 
@@ -17,7 +18,7 @@ This is ci-freeipa's default lane: when no SRPM, RPM directory or COPR repositor
 
 ## 2. Local run
 
-Bake a dedicated image. Do not reuse the `freeipa-ci` tag: a channel image that is already present is never rebuilt, so `up` on a host holding `freeipa-ci/full:current` runs the tests against that image without any error, and `ensure --build` would replace it.
+Bake a dedicated image. Do not reuse the `freeipa-ci` tag: a channel image that is already present is never rebuilt, so `up` on a host holding `freeipa-ci/full:current` runs the tests against that image without any error, and `ensure --build` would replace it. The command is run from the checkout root; from an installed package it is `<CI_ROOT>/images/build.sh` (the script is cwd-independent, and `ensure` bakes missing channel images through it).
 
 ```sh
 bash images/build.sh --dist 45 --tag freeipa-distro
@@ -74,7 +75,7 @@ Nothing but this repository is involved: the request runs its own plan `tmt/plan
 ```
 
 - `TESTING_FARM_API_TOKEN` must be set (or pass `--tf-token`). Never print it.
-- The guest clones this repository at `--tf-repo-url`/`--tf-ref`, by default this checkout's `origin` and current branch. That ref must be pushed and must contain `tmt/plans/distro.fmf`; local uncommitted changes do not reach the guest. Pushing is the user's decision: ask first.
+- The guest clones this repository at `--tf-repo-url`/`--tf-ref`, by default this checkout's `origin` and current branch. That ref must be pushed and must contain `tmt/plans/distro.fmf`; local uncommitted changes do not reach the guest. Pushing is the user's decision: ask first. From an installed package there is no checkout to default from (`_data` has no git origin): pass `--ipa-from-distro --tf-repo-url URL --tf-ref REF` explicitly, and the queue file's absolute path into `freeipa_env/_data/queues/` (or a queue of your own). Without `--ipa-from-distro`, the explicit `--tf-repo-url` selects the `freeipa-env` plan (the build-a-repo lane) instead of the distro plan; with no flags at all the request fails with "has no origin remote".
 - `--dry-run` prints the request; check `"name": "/tmt/plans/distro"`, the compose and `FREEIPA_IPA_FROM_DISTRO`.
 - `--jobs NAME` filters the queue by job key; `--job-timeout` is per preset.
 - Collect with `./env/freeipa-env tf-logs REQUEST_ID --html` (no token needed); one workdir and one `results.html` per preset.
@@ -86,10 +87,12 @@ Do not pass `--freeipa-src` or `--tf-repo-url` here: either one means "build tha
 When hosts must run different Fedora releases, use the nested qemu provider. Each host is one VM. `presets/nested-qemu-mixed.yaml` puts `master1` on F44 and every other host on F45. `vm.guest_packages: [ipa-distro]` installs each VM's own release packages, including `firewalld`.
 
 ```sh
-freeipa-env blend prci/nightly-latest-testing/customized_ds_config_install.yaml \
+freeipa-env blend presets/prci/nightly-latest-testing/customized_ds_config_install.yaml \
     presets/nested-qemu-mixed.yaml --name mixed-cds
-freeipa-env up env/generated/mixed-cds.yaml && freeipa-env run env/generated/mixed-cds.yaml
+freeipa-env up  ~/.cache/freeipa-ci/generated/mixed-cds.yaml
+freeipa-env run ~/.cache/freeipa-ci/generated/mixed-cds.yaml
 ```
+`blend` resolves catalog names (`presets/...`) against the checkout's `env/` or the installed package's `_data/env/`, so the same command works from both; `up`/`run` need the generated file's real path (`~/.cache/freeipa-ci/generated/`), which is also where an installed package writes it.
 
 - Check each VM's release before trusting a result: `freeipa-server-*.fc44` on the master, `.fc45` on the replica. A mismatch means the image is wrong.
 - The job deadline of the calling tool can cut a run short; run the test without one.
